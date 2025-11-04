@@ -21,7 +21,7 @@ load_dotenv()
 MODEL_NAME = "gpt-4o-mini"
 TEMPERATURE = 0.4
 MAX_TOKENS = 4096
-IN_MEMORY_CHROMA_LIMIT = 200_000  # Max total token count to keep in memory
+IN_MEMORY_CHROMA_LIMIT = 200_000  # Max token count in memory
 
 # ------------------ API Key Handling ------------------
 try:
@@ -41,13 +41,16 @@ except Exception as e:
 # 🧠 LLM + PROMPT SETUP
 # ===========================================
 PROMPT = PromptTemplate(
-    template="""Context: {context}
+    template="""Context:
+{context}
 
-Question: {question}
+Question:
+{question}
 
-Answer concisely and only based on the given context. 
+Answer concisely and only based on the given context.
 If the context does not provide sufficient information, say:
-"I don't have enough information to answer that question." """,
+"I don't have enough information to answer that question."
+""",
     input_variables=["context", "question"]
 )
 
@@ -68,22 +71,17 @@ def init_llm():
 # ===========================================
 # ⚙️ GLOBAL IN-MEMORY DB CACHE
 # ===========================================
-# A global cache to hold Chroma vectorstore in memory (RAM only)
 CHROMA_CACHE = {}
 
 
 def load_in_memory_vectorstore(embeddings, docs, collection_name="ram_store"):
-    """
-    Create an in-memory (non-persistent) Chroma DB from existing embeddings & texts.
-    main.py will call this once after embedding step and pass docs to it.
-    """
+    """Create an in-memory Chroma DB and cache it globally."""
     try:
         vectorstore = Chroma.from_texts(
             texts=docs,
             embedding=embeddings,
             collection_name=collection_name
         )
-        # Cache in RAM to reuse for future policy queries
         CHROMA_CACHE[collection_name] = vectorstore
         return vectorstore
     except Exception as e:
@@ -98,49 +96,56 @@ def get_cached_vectorstore(collection_name="ram_store"):
 # ===========================================
 # 🧩 RAG RETRIEVAL + ANSWERING
 # ===========================================
-
-def policy_handler(query: str, collection_name="ram_store") -> str:
+def policy_handler(query: str, collection_name="ram_store"):
     """
     Perform retrieval + LLM answering using cached in-memory Chroma DB.
-    Returns a plain string result (or 'ERROR: ...' if failure).
+    Returns: (answer: str, retrieved_docs: list[str])
     """
     try:
-        # 1️⃣ Check for existing vectorstore
+        # 1️⃣ Retrieve cached DB
         vectorstore = get_cached_vectorstore(collection_name)
         if not vectorstore:
             return (
-                "ERROR: No in-memory Chroma DB found.\n"
-                "Upload and embed policy documents first before querying."
+                "ERROR: No in-memory Chroma DB found. "
+                "Upload and embed policy documents first before querying.",
+                []
             )
 
-        # 2️⃣ Initialize LLM
-        llm = init_llm()
+        # 2️⃣ Retrieve context manually before QA
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+        retrieved_docs = retriever.get_relevant_documents(query)
+        retrieved_chunks = [doc.page_content for doc in retrieved_docs]
 
-        # 3️⃣ Build retrieval-based QA chain
+        if not retrieved_chunks:
+            return ("ERROR: No relevant chunks retrieved from vectorstore.", [])
+
+        # 3️⃣ Initialize LLM + chain
+        llm = init_llm()
         qa = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=vectorstore.as_retriever(),
+            retriever=retriever,
             chain_type_kwargs={"prompt": PROMPT}
         )
 
-        # 4️⃣ Run retrieval QA
-        response = qa.run(query)
-        if not response:
-            return "ERROR: Empty response returned from QA model."
+        # 4️⃣ Generate response (using invoke instead of deprecated run)
+        response = qa.invoke({"query": query})
+        if not response or not response.get("result"):
+            return ("ERROR: Empty response returned from QA model.", retrieved_chunks)
 
-        return response.strip()
+        final_answer = response["result"].strip()
+        return (final_answer, retrieved_chunks)
 
     except Exception as e:
-        return f"ERROR: Policy handler failed at retrieval stage: {e}\n{traceback.format_exc()}"
+        err_msg = f"ERROR: Policy handler failed: {e}\n{traceback.format_exc()}"
+        return (err_msg, [])
 
 
 # ===========================================
 # 🧹 MEMORY MANAGEMENT HELPERS
 # ===========================================
-
 def clear_cache():
-    """Safely clear the in-memory Chroma cache (for memory limits)."""
+    """Safely clear the in-memory Chroma cache."""
     try:
         CHROMA_CACHE.clear()
         return "✅ In-memory Chroma cache cleared."
@@ -152,10 +157,9 @@ def cache_status():
     """Return info about current cache usage."""
     try:
         collections = list(CHROMA_CACHE.keys())
-        status = {
+        return {
             "collections_loaded": collections,
             "total_collections": len(collections)
         }
-        return status
     except Exception as e:
         return {"error": f"Failed to get cache status: {e}"}
