@@ -1,152 +1,161 @@
 import os
+import traceback
 from dotenv import load_dotenv
-import gradio as gr
-from PyPDF2 import PdfReader
-from pptx import Presentation
-from docx import Document
-from langchain.text_splitter import CharacterTextSplitter
+
+# Optional Streamlit import (for secrets)
+try:
+    import streamlit as st
+except ImportError:
+    st = None
+
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
-import uuid
 
 # ===========================================
 # 🔧 CONFIGURATION
 # ===========================================
 load_dotenv()
 
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
-MAX_TOKENS = 4096
 MODEL_NAME = "gpt-4o-mini"
 TEMPERATURE = 0.4
-CHROMA_BASE_DIR = "chroma_store"
+MAX_TOKENS = 4096
+IN_MEMORY_CHROMA_LIMIT = 200_000  # Max total token count to keep in memory
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("Please set OPENAI_API_KEY in your .env file")
+# ------------------ API Key Handling ------------------
+try:
+    OPENAI_API_KEY = None
+    if st and hasattr(st, "secrets"):
+        OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
+    if not OPENAI_API_KEY:
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    if not OPENAI_API_KEY:
+        raise ValueError("Missing OPENAI_API_KEY in Streamlit secrets or .env")
+except Exception as e:
+    print(f"[ERROR] Unable to load API key: {e}")
+    OPENAI_API_KEY = None
 
-llm = ChatOpenAI(
-    api_key=OPENAI_API_KEY,
-    model_name=MODEL_NAME,
-    temperature=TEMPERATURE,
-    max_tokens=MAX_TOKENS
-)
 
+# ===========================================
+# 🧠 LLM + PROMPT SETUP
+# ===========================================
 PROMPT = PromptTemplate(
     template="""Context: {context}
 
 Question: {question}
 
-Answer the question concisely based on the given context. 
-If the context doesn't contain relevant information, say "I don't have enough information to answer that question." """,
+Answer concisely and only based on the given context. 
+If the context does not provide sufficient information, say:
+"I don't have enough information to answer that question." """,
     input_variables=["context", "question"]
 )
 
-# ===========================================
-# 🧩 DOCUMENT EXTRACTORS (TEXT ONLY)
-# ===========================================
 
-def process_pdf(pdf_file):
-    pdf_reader = PdfReader(pdf_file)
-    text = ""
-    for page in pdf_reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text + "\n"
-    splitter = CharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    return splitter.split_text(text)
-
-
-def process_pptx(pptx_file):
-    prs = Presentation(pptx_file)
-    text = ""
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                text += shape.text + "\n"
-    splitter = CharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    return splitter.split_text(text)
-
-
-def process_docx(docx_file):
-    doc = Document(docx_file)
-    text = ""
-    for para in doc.paragraphs:
-        text += para.text + "\n"
-    splitter = CharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    return splitter.split_text(text)
-
-# ===========================================
-# 🧠 RAG PIPELINE
-# ===========================================
-
-def create_vectorstore(texts, collection_name):
-    embeddings = OpenAIEmbeddings()
-    persist_dir = os.path.join(CHROMA_BASE_DIR, collection_name)
-    os.makedirs(persist_dir, exist_ok=True)
-
-    if os.path.exists(os.path.join(persist_dir, "chroma.sqlite3")):
-        vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
-    else:
-        vectorstore = Chroma.from_texts(
-            texts=texts,
-            embedding=embeddings,
-            persist_directory=persist_dir
+def init_llm():
+    """Initialize ChatOpenAI model safely."""
+    try:
+        return ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model_name=MODEL_NAME,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS
         )
-        vectorstore.persist()
+    except Exception as e:
+        raise RuntimeError(f"LLM initialization failed: {e}")
 
-    return vectorstore
-
-
-def process_file_and_query(uploaded_file, query):
-    ext = os.path.splitext(uploaded_file)[1].lower()
-    file_id = str(uuid.uuid4())
-
-    if ext == ".pdf":
-        texts = process_pdf(uploaded_file)
-    elif ext == ".pptx":
-        texts = process_pptx(uploaded_file)
-    elif ext == ".docx":
-        texts = process_docx(uploaded_file)
-    else:
-        raise ValueError("Unsupported file type. Please upload a PDF, PPTX, or DOCX.")
-
-    vectorstore = create_vectorstore(texts, collection_name=file_id)
-
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vectorstore.as_retriever(),
-        chain_type_kwargs={"prompt": PROMPT}
-    )
-
-    result = qa.run(query)
-    return result, len(texts)
 
 # ===========================================
-# 🎛 GRADIO INTERFACE
+# ⚙️ GLOBAL IN-MEMORY DB CACHE
+# ===========================================
+# A global cache to hold Chroma vectorstore in memory (RAM only)
+CHROMA_CACHE = {}
+
+
+def load_in_memory_vectorstore(embeddings, docs, collection_name="ram_store"):
+    """
+    Create an in-memory (non-persistent) Chroma DB from existing embeddings & texts.
+    main.py will call this once after embedding step and pass docs to it.
+    """
+    try:
+        vectorstore = Chroma.from_texts(
+            texts=docs,
+            embedding=embeddings,
+            collection_name=collection_name
+        )
+        # Cache in RAM to reuse for future policy queries
+        CHROMA_CACHE[collection_name] = vectorstore
+        return vectorstore
+    except Exception as e:
+        raise RuntimeError(f"In-memory vectorstore creation failed: {e}")
+
+
+def get_cached_vectorstore(collection_name="ram_store"):
+    """Retrieve cached Chroma vectorstore if available."""
+    return CHROMA_CACHE.get(collection_name)
+
+
+# ===========================================
+# 🧩 RAG RETRIEVAL + ANSWERING
 # ===========================================
 
-def gradio_interface(uploaded_file, query):
-    result, num_chunks = process_file_and_query(uploaded_file.name, query)
-    log = f"File processed successfully. Text chunks: {num_chunks}"
-    return result, log
+def policy_handler(query: str, collection_name="ram_store") -> str:
+    """
+    Perform retrieval + LLM answering using cached in-memory Chroma DB.
+    Returns a plain string result (or 'ERROR: ...' if failure).
+    """
+    try:
+        # 1️⃣ Check for existing vectorstore
+        vectorstore = get_cached_vectorstore(collection_name)
+        if not vectorstore:
+            return (
+                "ERROR: No in-memory Chroma DB found.\n"
+                "Upload and embed policy documents first before querying."
+            )
+
+        # 2️⃣ Initialize LLM
+        llm = init_llm()
+
+        # 3️⃣ Build retrieval-based QA chain
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vectorstore.as_retriever(),
+            chain_type_kwargs={"prompt": PROMPT}
+        )
+
+        # 4️⃣ Run retrieval QA
+        response = qa.run(query)
+        if not response:
+            return "ERROR: Empty response returned from QA model."
+
+        return response.strip()
+
+    except Exception as e:
+        return f"ERROR: Policy handler failed at retrieval stage: {e}\n{traceback.format_exc()}"
 
 
-iface = gr.Interface(
-    fn=gradio_interface,
-    inputs=[
-        gr.File(label="Upload PDF, PPTX, or DOCX"),
-        gr.Textbox(label="Enter your question")
-    ],
-    outputs=[
-        gr.Textbox(label="Answer"),
-        gr.Textbox(label="Processing Log")
-    ],
-    title="📚 Text-Only RAG System",
-    description="Upload a PDF, PPTX, or DOCX and ask questions about its text content."
-)
+# ===========================================
+# 🧹 MEMORY MANAGEMENT HELPERS
+# ===========================================
 
-iface.launch()
+def clear_cache():
+    """Safely clear the in-memory Chroma cache (for memory limits)."""
+    try:
+        CHROMA_CACHE.clear()
+        return "✅ In-memory Chroma cache cleared."
+    except Exception as e:
+        return f"ERROR: Failed to clear cache: {e}"
+
+
+def cache_status():
+    """Return info about current cache usage."""
+    try:
+        collections = list(CHROMA_CACHE.keys())
+        status = {
+            "collections_loaded": collections,
+            "total_collections": len(collections)
+        }
+        return status
+    except Exception as e:
+        return {"error": f"Failed to get cache status: {e}"}
