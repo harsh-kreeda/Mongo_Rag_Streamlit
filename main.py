@@ -153,9 +153,10 @@
 
 # main.py — Streamlit front-end for Router -> (Mongo | Policy) handlers
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timezone
 import traceback
 import os
+import re
 
 from src.Router_gpt import classify_query, RouteType
 
@@ -184,68 +185,88 @@ st.title("📚 Mongo_RAG - Streamlit Frontend")
 tab1, tab2 = st.tabs(["📂 Upload & Embed", "💬 Query & Route"])
 
 # ===========================================
+# HELPER — Process and Embed Files Safely
+# ===========================================
+def process_and_embed_files(uploaded_files):
+    """Extract text, split safely, and embed once into in-memory vectorstore."""
+    try:
+        if get_cached_vectorstore():
+            st.info("Existing in-memory Chroma DB found — clearing old cache.")
+            clear_cache()
+
+        all_texts = []
+        splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+
+        for uploaded_file in uploaded_files:
+            file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+            text = ""
+
+            if file_ext == ".pdf":
+                reader = PdfReader(uploaded_file)
+                for page in reader.pages:
+                    t = page.extract_text()
+                    if t:
+                        text += t + "\n"
+
+            elif file_ext == ".pptx":
+                prs = Presentation(uploaded_file)
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            text += shape.text + "\n"
+
+            elif file_ext == ".docx":
+                doc = Document(uploaded_file)
+                for para in doc.paragraphs:
+                    text += para.text + "\n"
+
+            # Clean text and avoid large single-blocks
+            text = re.sub(r"\s+", " ", text).strip()
+            if not text:
+                continue
+
+            chunks = splitter.split_text(text)
+
+            # Enforce max chunk length for token safety
+            safe_chunks = [c[:1000] if len(c) > 1000 else c for c in chunks]
+            all_texts.extend(safe_chunks)
+
+        if not all_texts:
+            st.error("❌ No valid text found in uploaded files.")
+            return False
+
+        embeddings = OpenAIEmbeddings()
+        load_in_memory_vectorstore(embeddings, all_texts, collection_name="ram_store")
+        st.success(f"✅ Successfully embedded {len(all_texts)} text chunks in memory!")
+        return True
+
+    except Exception as e:
+        st.error(f"❌ Embedding process failed: {e}")
+        st.code(traceback.format_exc())
+        return False
+
+
+# ===========================================
 # TAB 1 — UPLOAD & EMBED
 # ===========================================
 with tab1:
     st.markdown("""
     ### 📁 Upload Policy Documents
-    Upload your **PDF**, **DOCX**, or **PPTX** files here to embed and cache them in memory.
-    These embeddings will be used later for policy question answering.
+    Upload **PDF**, **DOCX**, or **PPTX** files here to embed them in-memory.
+    These embeddings will later be used for answering Policy-related queries.
     """)
 
     uploaded_files = st.file_uploader(
-        "Upload one or more files (PDF, DOCX, PPTX)",
+        "Upload one or more files",
         type=["pdf", "docx", "pptx"],
         accept_multiple_files=True
     )
 
     if uploaded_files:
         with st.spinner("🔄 Processing and embedding uploaded files..."):
-            try:
-                # Clear previous cache if exists
-                if get_cached_vectorstore():
-                    st.info("Existing in-memory Chroma DB found — clearing old cache.")
-                    clear_cache()
-
-                all_texts = []
-                splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-
-                for uploaded_file in uploaded_files:
-                    file_ext = os.path.splitext(uploaded_file.name)[1].lower()
-                    text = ""
-
-                    if file_ext == ".pdf":
-                        reader = PdfReader(uploaded_file)
-                        for page in reader.pages:
-                            t = page.extract_text()
-                            if t:
-                                text += t + "\n"
-                    elif file_ext == ".pptx":
-                        prs = Presentation(uploaded_file)
-                        for slide in prs.slides:
-                            for shape in slide.shapes:
-                                if hasattr(shape, "text"):
-                                    text += shape.text + "\n"
-                    elif file_ext == ".docx":
-                        doc = Document(uploaded_file)
-                        for para in doc.paragraphs:
-                            text += para.text + "\n"
-
-                    chunks = splitter.split_text(text)
-                    all_texts.extend(chunks)
-
-                if not all_texts:
-                    st.error("No readable text extracted from uploaded files.")
-                else:
-                    embeddings = OpenAIEmbeddings()
-                    load_in_memory_vectorstore(embeddings, all_texts, collection_name="ram_store")
-                    st.success(f"✅ Successfully embedded {len(all_texts)} text chunks in memory!")
-
-            except Exception as e:
-                st.error(f"❌ Embedding process failed: {e}")
-                st.code(traceback.format_exc())
-
-    st.caption(f"🧮 Cache status: {cache_status()}")
+            success = process_and_embed_files(uploaded_files)
+        if success:
+            st.caption(f"🧮 Cache status: {cache_status()}")
     if st.button("🧹 Clear Cache"):
         msg = clear_cache()
         st.info(msg)
@@ -256,10 +277,11 @@ with tab1:
 with tab2:
     st.markdown("""
     ### 🧠 Intelligent Query Router
-    Enter a natural-language query, and the router will:
+    Enter a natural-language query.  
+    The router will:
     1. Classify it as **Policy**, **Document**, or **Both**
-    2. Route it to the correct handler
-    3. Return detailed step-by-step output
+    2. Route to appropriate handler(s)
+    3. Return detailed results + full trace logs
     """)
 
     query = st.text_input("Enter your question", placeholder="e.g. What is the leave encashment policy?")
@@ -270,17 +292,21 @@ with tab2:
             if not query or not query.strip():
                 st.warning("⚠️ Please enter a question.")
             else:
-                st.session_state['run_time'] = datetime.utcnow().isoformat()
+                st.session_state['run_time'] = datetime.now(timezone.utc).isoformat()
                 st.session_state['query'] = query.strip()
 
     if 'run_time' in st.session_state:
         st.caption(f"Last run UTC: {st.session_state['run_time']}")
 
+    # ==============================
+    # EXECUTION PIPELINE
+    # ==============================
     if 'query' in st.session_state and st.session_state['query']:
         q = st.session_state['query']
 
         st.divider()
-        st.subheader("🔍 Step 1 — Classifying query")
+        st.subheader("🔍 Step 1 — Classifying Query")
+
         with st.spinner("Classifying query via Router..."):
             try:
                 router_response = classify_query(q)
@@ -289,6 +315,7 @@ with tab2:
                 st.code(traceback.format_exc())
                 st.stop()
 
+        # Handle router output
         if isinstance(router_response, dict) and "error" in router_response:
             st.error(f"❌ Router error at stage **{router_response.get('stage')}**")
             st.code(router_response["error"])
@@ -315,7 +342,9 @@ with tab2:
         result_text = ""
         stage_logs = []
 
-        # -------------------- DOCUMENT HANDLER --------------------
+        # ==============================
+        # DOCUMENT HANDLER
+        # ==============================
         if getattr(route, "value", str(route)).lower() == "document":
             st.info("🗂️ Running Mongo (Document) handler...")
             stage_logs.append("Router → Document Handler (Mongo)")
@@ -332,7 +361,9 @@ with tab2:
                 st.error(f"❌ Document handler failed: {e}")
                 st.code(traceback.format_exc())
 
-        # -------------------- POLICY HANDLER --------------------
+        # ==============================
+        # POLICY HANDLER
+        # ==============================
         elif getattr(route, "value", str(route)).lower() == "policy":
             st.info("📜 Running Policy handler...")
             stage_logs.append("Router → Policy Handler")
@@ -344,16 +375,21 @@ with tab2:
                 with st.spinner("Executing Policy RAG pipeline..."):
                     result_text = policy_handler(q)
 
-                if isinstance(result_text, str) and result_text.startswith("ERROR"):
-                    st.error(result_text) 
+                if not result_text:
+                    st.warning("⚠️ No response generated by Policy handler.")
+                elif isinstance(result_text, str) and result_text.startswith("ERROR"):
+                    st.error(result_text)
                 else:
                     st.success("✅ Policy handler executed successfully.")
+
             except Exception as e:
                 stage_logs.append(f"Policy Handler Error: {e}")
-                st.error(f"❌ Policy handler failed: {e}")
+                st.error("❌ Policy handler failed:")
                 st.code(traceback.format_exc())
 
-        # -------------------- BOTH HANDLERS --------------------
+        # ==============================
+        # BOTH HANDLERS
+        # ==============================
         elif getattr(route, "value", str(route)).lower() == "both":
             st.info("🔄 Running both Mongo & Policy handlers...")
             stage_logs.append("Router → Both (Document + Policy)")
@@ -369,21 +405,27 @@ with tab2:
                     res_pol = policy_handler(pol_q or q)
 
                 if any(isinstance(x, str) and x.startswith("ERROR") for x in [res_doc, res_pol]):
-                    st.error("One or both handlers reported an error.")
+                    st.error("⚠️ One or both handlers reported an error.")
                 else:
                     st.success("✅ Both handlers executed successfully.")
 
                 result_text = f"--- DOCUMENT RESULT ---\n{res_doc}\n\n--- POLICY RESULT ---\n{res_pol}"
+
             except Exception as e:
                 stage_logs.append(f"Both Handler Error: {e}")
-                st.error(f"❌ Combined handler failure: {e}")
+                st.error("❌ Combined handler failure:")
                 st.code(traceback.format_exc())
 
+        # ==============================
+        # UNKNOWN ROUTE
+        # ==============================
         else:
             st.warning(f"⚠️ Unknown route type: {route}")
             stage_logs.append("Unknown Route")
 
-        # -------------------- OUTPUT DISPLAY --------------------
+        # ==============================
+        # OUTPUT DISPLAY
+        # ==============================
         st.divider()
         st.subheader("🧾 Final Result")
         st.code(result_text or "No output generated.", language="text")
