@@ -184,5 +184,13 @@ if __name__ == "__main__":
     email, query = parse_args()
     result = run_pipeline(email, query)
 
-    # ✅ ONLY print JSON so Streamlit can parse it
-    print(json.dumps(result, ensure_ascii=False))
+    #  ONLY print JSON so Streamlit can parse it
+    #  Extract just the final answer (string)
+        final_answer = result.get("mongo_output") or result.get("final_answer") or ""
+        
+        #  Clean fallback
+        if not final_answer:
+            final_answer = str(result)
+        
+        print(final_answer)
+
