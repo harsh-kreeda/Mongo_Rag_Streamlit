@@ -1076,81 +1076,129 @@ with tab1:
 # ------------------------------------------------
 # ✅ TAB 2 — Mongo Document Agent (with ultra-logs)
 # ------------------------------------------------
+# ------------------------------------------------
+# ✅ TAB 2 — Mongo Document Agent (run via uv.lock & show live logs)
+# ------------------------------------------------
 with tab2:
 
-    st.header("🗄️ Mongo Document Query — HR BOT")
-    st.markdown("Enter **email** + **document query** to run the HR Mongo Agent.")
+    st.header("🗄️ Mongo Document Query — HR BOT (uv.run)")
+    st.markdown(
+        "This will execute `src/app.py` through the `uv` CLI (uses your uv.lock). "
+        "If `uv` is not available it will fall back to `python src/app.py`."
+    )
 
     email = st.text_input("User Email")
     query = st.text_area("Document Query", height=150)
 
-    if st.button("Run Document Query"):
+    run_now = st.button("Run Document Query (via uv.run)")
 
+    if run_now:
         if not email.strip() or not query.strip():
             st.warning("⚠️ Please enter BOTH Email and Query.")
             st.stop()
 
-        st.markdown("### 🔍 Running `app.py`…")
+        # Prepare environment for subprocess
+        env = os.environ.copy()
+        env["EMAIL"] = email
+        env["NATURAL_LANGUAGE_QUERY"] = query
 
-        # ---------------------------------------------------------
-        # ✅ 1. LOAD THE MODULE ALWAYS
-        # ---------------------------------------------------------
+        st.markdown("### 🔍 Execution settings")
+        st.json({"cmd_preference": "uv run (fall back to python)", "env_vars_sent": ["EMAIL", "NATURAL_LANGUAGE_QUERY"]})
+
+        # UI area for live logs
+        log_placeholder = st.empty()
+        log_lines = []
+
+        # Try the uv CLI first (so it respects uv.lock). Use --active to target the current venv if needed.
+        import subprocess
+        import shlex
+
+        def run_command_stream(cmd_list, cwd=None, env=None):
+            """Run command streaming stdout+stderr and yield lines (text)."""
+            try:
+                proc = subprocess.Popen(
+                    cmd_list,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1,
+                    cwd=cwd,
+                    env=env
+                )
+            except FileNotFoundError as fe:
+                # Command not found (e.g. uv not installed)
+                raise fe
+
+            # Stream lines as they come
+            try:
+                for line in proc.stdout:
+                    yield line.rstrip("\n")
+            finally:
+                proc.stdout.close()
+                return_code = proc.wait()
+                yield f"\n[PROCESS_EXIT_CODE]: {return_code}"
+
+        # Build uv command (primary) and python fallback
+        uv_cmd = ["uv", "run", "src/app.py", "--active"]
+        python_cmd = [sys.executable, os.path.join(SRC_DIR, "app.py")]
+
+        executed = False
+        error_hint = None
+
+        # Attempt uv first
         try:
-            App_mod = load_src_module("app")   # loads src/app.py
-            st.success("✅ app.py loaded successfully")
-        except Exception:
-            st.error("❌ app.py failed to load:")
-            st.code(traceback.format_exc())
-            st.stop()
+            log_lines.append(f"$ {' '.join(shlex.quote(p) for p in uv_cmd)}")
+            log_placeholder.code("\n".join(log_lines))
+            for out_line in run_command_stream(uv_cmd, cwd=ROOT_DIR, env=env):
+                log_lines.append(out_line)
+                # update live
+                log_placeholder.code("\n".join(log_lines)[-10000:])  # keep UI responsive (trim if very long)
+            executed = True
+        except FileNotFoundError:
+            # uv not found: fallback to python
+            error_hint = "`uv` CLI not found. Falling back to executing `python src/app.py`."
+            log_lines.append(error_hint)
+            log_placeholder.code("\n".join(log_lines))
+        except Exception as ex:
+            # other runtime error when invoking uv
+            log_lines.append(f"[uv execution error] {ex}")
+            log_lines.append(traceback.format_exc())
+            log_placeholder.code("\n".join(log_lines))
+            # decide to fallback to python
+            error_hint = "uv failed — falling back to python execution."
 
-        # ---------------------------------------------------------
-        # ✅ 2. Inject parameters into the script
-        # ---------------------------------------------------------
-        try:
-            App_mod.email = email
-            App_mod.NATURAL_LANGUAGE_QUERY = query
-            st.write("✅ Injected parameters into app.py:")
-            st.json({
-                "email": email,
-                "query": query
-            })
-        except Exception:
-            st.error("❌ Failed injecting parameters into app.py:")
-            st.code(traceback.format_exc())
-            st.stop()
+        # If uv didn't run, run python fallback
+        if not executed:
+            try:
+                log_lines.append(f"$ {' '.join(shlex.quote(p) for p in python_cmd)}")
+                log_placeholder.code("\n".join(log_lines))
+                for out_line in run_command_stream(python_cmd, cwd=ROOT_DIR, env=env):
+                    log_lines.append(out_line)
+                    log_placeholder.code("\n".join(log_lines)[-10000:])
+                executed = True
+            except Exception as ex:
+                log_lines.append("[python fallback error] " + str(ex))
+                log_lines.append(traceback.format_exc())
+                log_placeholder.code("\n".join(log_lines))
 
-        # ---------------------------------------------------------
-        # ✅ 3. CAPTURE app.py OUTPUT
-        # ---------------------------------------------------------
-        import io
-        import contextlib
+        # Final UI: show full logs and quick diagnostics
+        st.markdown("### 📄 Execution Log (full)")
+        st.code("\n".join(log_lines))
 
-        buffer = io.StringIO()
-
-        st.markdown("### 📄 Raw Execution Log (from app.py)")
-        try:
-            with contextlib.redirect_stdout(buffer):
-                # ✅ If app.py has a main(), use it. Else re-run top-level code.
-                if hasattr(App_mod, "main"):
-                    App_mod.main()
-                else:
-                    # Re-run the module code safely
-                    spec = importlib.util.spec_from_file_location("src.app", os.path.join(SRC_DIR, "app.py"))
-                    mod = importlib.util.module_from_spec(spec)
-
-                    # Inject params before execution
-                    mod.email = email
-                    mod.NATURAL_LANGUAGE_QUERY = query
-
-                    spec.loader.exec_module(mod)
-
-            full_output = buffer.getvalue()
-            st.code(full_output)
-
-            st.success("✅ app.py executed successfully")
-
-        except Exception as e:
-            st.error("❌ app.py crashed:")
-            st.code(traceback.format_exc())
-            st.stop()
-
+        # Show exit code if present
+        exit_code_lines = [l for l in log_lines if l.startswith("[PROCESS_EXIT_CODE]")]
+        if exit_code_lines:
+            try:
+                exit_code = int(exit_code_lines[-1].split(":")[1].strip())
+            except Exception:
+                exit_code = None
+            st.write("Exit code:", exit_code)
+            if exit_code != 0:
+                st.error("Process exited with non-zero code. Check the logs above.")
+                st.info(
+                    "If you see errors about module imports, ensure your script uses absolute imports "
+                    "(e.g. `from src.Mongo import ...`) and `src/__init__.py` exists. "
+                    "If 'uv' is missing, install it in the environment that runs Streamlit or use a Docker image."
+                )
+        else:
+            st.warning("No process exit code found in logs — check the raw output above.")
