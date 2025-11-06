@@ -535,208 +535,332 @@
 # ===========================================
 # ✅ main.py — Streamlit Frontend for RAG System
 # ===========================================
-
+# main.py — Streamlit front-end (robust import for src modules)
 import streamlit as st
 from datetime import datetime, timezone
 import traceback
 import os
 import sys
+import importlib
+import importlib.util
 
-# -----------------------------------------------------
-# ✅ Ensure project root is importable inside Streamlit Cloud
-# -----------------------------------------------------
+# -----------------------------
+# Helper: resilient loader for src.<module>
+# -----------------------------
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(ROOT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.append(PARENT_DIR)
+SRC_DIR = os.path.join(ROOT_DIR, "src")
 
-# -----------------------------------------------------
-# ✅ Import Router
-# -----------------------------------------------------
-try:
-    from src.Router_gpt import classify_query, RouteType
-except Exception as e:
-    st.error(f"❌ Failed to import Router: {e}")
-    st.stop()
+def load_src_module(module_name: str):
+    """
+    Try `import src.<module_name>` normally; if that fails, load from file
+    src/<module_name>.py and insert into sys.modules as 'src.<module_name>'.
+    Returns the module object.
+    """
+    full_name = f"src.{module_name}"
+    # 1) try normal import (works when src is a package)
+    try:
+        return importlib.import_module(full_name)
+    except Exception:
+        pass
 
-# -----------------------------------------------------
-# ✅ Import Embedding, Retriever, Multimedia
-# -----------------------------------------------------
+    # 2) fallback: import from file path
+    module_path = os.path.join(SRC_DIR, f"{module_name}.py")
+    if not os.path.isfile(module_path):
+        raise ImportError(f"Module file not found: {module_path}")
+
+    spec = importlib.util.spec_from_file_location(full_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load spec for {module_path}")
+
+    mod = importlib.util.module_from_spec(spec)
+    # Insert into sys.modules under both file-name key and 'src.<module>' to mimic package import
+    sys.modules[full_name] = mod
+    sys.modules[f"{module_name}"] = mod  # optional convenience
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        # Remove partially-initialized module if exec fails to avoid stale state
+        sys.modules.pop(full_name, None)
+        sys.modules.pop(module_name, None)
+        raise
+    return mod
+
+# -----------------------------
+# Import router + core modules via resilient loader
+# -----------------------------
 try:
-    from src.embedding_Class import RAGIndexer
-    from src.retrival_class import Retriever
-    from src.multimedia import multimedia_response
+    Router_mod = load_src_module("Router_gpt")
+    classify_query = getattr(Router_mod, "classify_query")
+    RouteType = getattr(Router_mod, "RouteType", None)
 except Exception as e:
-    st.error(f"❌ Failed to import core RAG modules: {e}")
+    st.error(f"Failed to load router module (`src/Router_gpt.py`): {e}")
     st.code(traceback.format_exc())
     st.stop()
 
-# -----------------------------------------------------
-# ✅ GLOBAL RAM CACHE (PERSIST for whole Streamlit session)
-# -----------------------------------------------------
+# Load embedding, retriever, multimedia similarly
+try:
+    Emb_mod = load_src_module("embedding_Class")
+    RAGIndexer = getattr(Emb_mod, "RAGIndexer")
+except Exception as e:
+    st.error(f"Failed to load embedding_Class (`src/embedding_Class.py`): {e}")
+    st.code(traceback.format_exc())
+    st.stop()
+
+try:
+    Ret_mod = load_src_module("retrival_class")
+    # retrival_class may expose Retriever and/or policy_handler_from_retriever
+    Retriever = getattr(Ret_mod, "Retriever")
+    policy_handler_from_retriever = getattr(Ret_mod, "policy_handler_from_retriever", None)
+except Exception as e:
+    st.error(f"Failed to load retrival_class (`src/retrival_class.py`): {e}")
+    st.code(traceback.format_exc())
+    st.stop()
+
+# multimedia may be optional — but we try to load it the same way
+try:
+    Multi_mod = load_src_module("multimedia")
+    multimedia_response = getattr(Multi_mod, "multimedia_response", None)
+except Exception as e:
+    # don't hard-stop here; we can still use policy_handler_from_retriever if present
+    multimedia_response = None
+    st.warning(f"Warning: multimedia module not loaded: {e}")
+
+# -----------------------------
+# Streamlit session-state init
+# -----------------------------
 if "rag_cache" not in st.session_state:
+    # rag_cache will be dict: {texts, vectors, metadatas, embed_model (opt)}
     st.session_state.rag_cache = None
 
+if "last_embedded" not in st.session_state:
+    st.session_state.last_embedded = None
 
-# ===========================================
-# ✅ PAGE CONFIG
-# ===========================================
-st.set_page_config(page_title="Tata Play - Policy RAG", page_icon="📘", layout="wide")
-st.title("📘 Tata Play HR Policy Assistant")
+if "last_run" not in st.session_state:
+    st.session_state.last_run = None
 
+# -----------------------------
+# UI: Page config
+# -----------------------------
+st.set_page_config(page_title="Policy RAG — Streamlit", page_icon="📚", layout="wide")
+st.title("📚 Policy RAG — Streamlit Frontend")
 
-# ===========================================
-# ✅ LOAD EMBEDDINGS (Runs Once)
-# ===========================================
-def load_policy_embeddings_once():
+# -----------------------------
+# Controls: email + query + actions
+# -----------------------------
+with st.container():
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        user_email = st.text_input("User Email (for audit)", value=st.session_state.get("user_email", ""))
+        user_query = st.text_area("Enter your question", height=140, placeholder="e.g. How do I find my leave balance?")
+    with col2:
+        st.write("")  # spacer
+        run = st.button("Run Query")
+        rebuild = st.button("Rebuild embeddings (force)")
 
-    if st.session_state.rag_cache:
-        st.info("✅ Reusing existing RAM embeddings (already loaded).")
-        return st.session_state.rag_cache
+    if run:
+        st.session_state.user_email = user_email.strip()
+        st.session_state.query_to_run = user_query.strip()
+        st.session_state.last_run = datetime.now(timezone.utc).isoformat()
 
-    st.info("📦 Building embeddings from Dataset/Policies (runs once per session)...")
+    if rebuild:
+        # clear cache so next run rebuilds embeddings
+        st.session_state.rag_cache = None
+        st.session_state.last_embedded = None
+        st.info("Embeddings cache cleared. Next query will rebuild the index.")
 
+# -----------------------------
+# Helper: build embeddings (single-run)
+# -----------------------------
+POLICIES_PATH = os.path.join(ROOT_DIR, "Dataset", "Policies")
+
+def build_index_from_policies():
+    """
+    Builds the RAG index from Dataset/Policies using RAGIndexer and stores into session_state.
+    """
     try:
-        idx = RAGIndexer(
-            local_paths=["Dataset/Policies"],   # ✅ Hard-coded local folder
-            s3_urls=None,
-            workdir="rag_work",
-            embed_model="text-embedding-3-large"
-        )
+        with st.spinner("Building embeddings from Dataset/Policies (this runs once per session)..."):
+            idx = RAGIndexer(
+                local_paths=[POLICIES_PATH],
+                s3_urls=None,
+                workdir="rag_work",
+                embed_model="text-embedding-3-large",
+                max_tokens=900,
+                overlap=150,
+                min_chunk_chars=280,
+            )
+            idx.build()
 
-        idx.build()
+            if not idx.texts or idx.vectors is None:
+                st.error("Embedding pipeline completed but returned no data. Check files in Dataset/Policies.")
+                return False
 
-        if not idx.texts or idx.vectors is None:
-            st.error("❌ Embedding creation failed — no data extracted.")
-            return None
-
-        cache = {
-            "texts": idx.texts,
-            "vectors": idx.vectors,
-            "metadatas": idx.metadatas
-        }
-
-        st.session_state.rag_cache = cache
-        st.success(f"✅ Loaded {len(idx.texts)} chunks into RAM.")
-
-        return cache
+            # Save to session_state
+            st.session_state.rag_cache = {
+                "texts": idx.texts,
+                "vectors": idx.vectors,
+                "metadatas": idx.metadatas,
+                "embed_model": getattr(idx.cfg, "embed_model", "text-embedding-3-large"),
+            }
+            st.session_state.last_embedded = datetime.now(timezone.utc).isoformat()
+            st.success(f"Embeddings ready — {len(idx.texts)} chunks loaded into RAM.")
+            return True
 
     except Exception as e:
-        st.error("❌ Failed during embedding pipeline.")
+        st.error("Failed to build embeddings:")
         st.code(traceback.format_exc())
-        return None
+        return False
 
+# If not present, build now (sync)
+if st.session_state.rag_cache is None:
+    build_index_from_policies()
 
-# ===========================================
-# ✅ Streamlit UI
-# ===========================================
+# -----------------------------
+# When user pressed Run Query
+# -----------------------------
+if st.session_state.get("query_to_run"):
+    q = st.session_state["query_to_run"]
+    st.markdown("---")
+    st.subheader("🔎 Execution Trace")
 
-st.subheader("🔑 User Details")
-user_email = st.text_input("Enter your email:", placeholder="name@company.com")
+    st.write("User:", st.session_state.get("user_email", "N/A"))
+    st.write("Query submitted at (UTC):", st.session_state.get("last_run"))
 
-st.divider()
-
-
-st.subheader("💬 Ask a Policy or Document Question")
-query = st.text_area("Your Query", height=120)
-
-
-if st.button("Run Query"):
-    if not user_email.strip():
-        st.warning("⚠️ Please enter your email before running queries.")
-        st.stop()
-
-    if not query.strip():
-        st.warning("⚠️ Enter a query to proceed.")
-        st.stop()
-
-    # Load embeddings into RAM
-    cache = load_policy_embeddings_once()
-    if cache is None:
-        st.error("❌ Cannot answer queries without embeddings.")
-        st.stop()
-
-    # ----------------------------------------
-    # ✅ STEP 1 — Router Classification
-    # ----------------------------------------
-    st.subheader("🔍 Step 1 — Router Classification")
-
-    try:
-        route, confidence, reason, doc_q, pol_q = classify_query(query)
-    except Exception as e:
-        st.error(f"❌ Router crashed: {e}")
-        st.code(traceback.format_exc())
-        st.stop()
-
-    st.json({
-        "route": route.value if hasattr(route, "value") else str(route),
-        "confidence": confidence,
-        "reason": reason,
-        "doc_query": doc_q,
-        "policy_query": pol_q,
-    })
-
-    st.success(f"✅ Classified as **{route.value.upper()}** (confidence {confidence})")
-    st.divider()
-
-    # ----------------------------------------
-    # ✅ STEP 2 — Policy Handling
-    # ----------------------------------------
-    if route.value == "policy":
-        st.subheader("📘 Step 2 — Policy Answer")
-
-        retriever = Retriever(
-            texts=cache["texts"],
-            metadatas=cache["metadatas"],
-            vectors=cache["vectors"]
-        )
-
-        with st.spinner("🔎 Retrieving relevant chunks..."):
-            ret = retriever.retrieve(query=query, top_k=5, rerank=True)
-
-        if "error" in ret:
-            st.error(ret["error"])
+    # 1) Classify
+    with st.spinner("Classifying query..."):
+        try:
+            router_response = classify_query(q)
+        except Exception as e:
+            st.error(f"Router crashed: {e}")
+            st.code(traceback.format_exc())
             st.stop()
 
-        chunks = [c["text"] for c in ret["candidates"]]
+    # Validate router response
+    if isinstance(router_response, dict) and "error" in router_response:
+        st.error(f"Router error: {router_response}")
+        st.stop()
 
-        with st.spinner("🧠 Generating final answer..."):
-            answer = multimedia_response(query, chunks)
+    try:
+        route, confidence, reason, doc_q, pol_q = router_response
+    except Exception:
+        st.error("Router returned unexpected format.")
+        st.write(router_response)
+        st.stop()
 
-        st.success("✅ Final Answer")
-        st.write(answer)
-        st.divider()
+    st.write("Router decision:", getattr(route, "value", str(route)))
+    st.write("Confidence:", confidence)
+    st.write("Reason:", reason)
 
+    result_text = ""
+    stage_logs = []
 
-    # ----------------------------------------
-    # ✅ STEP 3 — Document Handling (NOT READY)
-    # ----------------------------------------
-    elif route.value == "document":
-        st.subheader("🗂️ Document Handler")
-        st.warning("📁 Document RAG is not implemented yet.")
-        st.info("✅ Router worked — but document features are pending.")
+    # route_name normalized
+    route_name = getattr(route, "value", str(route)).lower()
 
-    # ----------------------------------------
-    # ✅ STEP 4 — Both
-    # ----------------------------------------
+    # Helper to safely run policy pipeline
+    def run_policy_pipeline(use_query: str):
+        """
+        Returns (answer_str, context_chunks_list) or (error_str, []).
+        """
+        cache = st.session_state.rag_cache
+        if not cache:
+            return ("ERROR: No embeddings present. Please upload/persist or rebuild embeddings.", [])
+
+        try:
+            retr = Retriever(
+                texts=cache["texts"],
+                metadatas=cache.get("metadatas", [{}] * len(cache["texts"])),
+                vectors=cache["vectors"],
+                embed_model=cache.get("embed_model"),
+            )
+        except Exception as e:
+            return (f"ERROR: Failed to create Retriever: {e}", [])
+
+        # Prefer high-level handler if available
+        if policy_handler_from_retriever is not None:
+            try:
+                answer, context_chunks = policy_handler_from_retriever(retr, use_query, top_k=5, rerank=True)
+                return (answer, context_chunks)
+            except Exception as e:
+                return (f"ERROR: policy_handler_from_retriever crashed: {e}\n{traceback.format_exc()}", [])
+
+        # else fallback to manual retrieval + multimedia (if available)
+        try:
+            ret = retr.retrieve(use_query, top_k=5, rerank=True)
+            if "error" in ret:
+                return (f"ERROR: Retriever returned error: {ret['error']}", [])
+            candidates = ret.get("candidates", [])
+            chunks = [c["text"] for c in candidates]
+            # If multimedia_response available, use it
+            if multimedia_response:
+                try:
+                    ans = multimedia_response(use_query, chunks)
+                    return (ans, chunks)
+                except Exception as e:
+                    return (f"ERROR: multimedia_response failed: {e}\n{traceback.format_exc()}", chunks)
+            else:
+                # return concatenated chunks
+                combined = "\n\n---\n\n".join(chunks)
+                return (combined, chunks)
+        except Exception as e:
+            return (f"ERROR: Retrieval pipeline failed: {e}\n{traceback.format_exc()}", [])
+
+    # handle routes
+    if route_name == "document":
+        st.info("🗂 Document route selected — currently unavailable.")
+        stage_logs.append("Router → Document Handler (NOT IMPLEMENTED)")
+        result_text = "Document handler is currently unavailable. (Planned)"
+
+    elif route_name == "policy":
+        stage_logs.append("Router → Policy Handler")
+        st.info("📜 Policy handler — retrieving from in-memory index.")
+
+        answer, context_chunks = run_policy_pipeline(pol_q or q)
+
+        if isinstance(answer, str) and answer.startswith("ERROR"):
+            st.error(answer)
+            result_text = answer
+        else:
+            st.success("✅ Policy handler executed.")
+            st.subheader("📄 Final Answer")
+            st.write(answer)
+            with st.expander("🔎 Retrieved Chunks (debug)", expanded=False):
+                for i, c in enumerate(context_chunks):
+                    st.markdown(f"**Chunk #{i+1}** (first 600 chars):")
+                    st.code(c[:600], language="text")
+            result_text = answer
+
+    elif route_name == "both":
+        stage_logs.append("Router → Both (Document + Policy)")
+        st.info("Running policy part (document handler is unavailable).")
+
+        answer, context_chunks = run_policy_pipeline(pol_q or q)
+        if isinstance(answer, str) and answer.startswith("ERROR"):
+            st.error(answer)
+            result_text = answer
+        else:
+            result_text = f"--- POLICY RESULT ---\n{answer}\n\n--- DOCUMENT RESULT ---\nCurrently unavailable."
+
+            st.subheader("📄 Policy Answer (Documents not available)")
+            st.write(answer)
+            with st.expander("🔎 Retrieved Chunks (debug)", expanded=False):
+                for i, c in enumerate(context_chunks):
+                    st.markdown(f"**Chunk #{i+1}** (first 600 chars):")
+                    st.code(c[:600], language="text")
+
     else:
-        st.subheader("🔄 Combined (Document + Policy) Query")
-        st.warning("⚠️ Document system is unavailable — showing only Policy result.")
+        st.warning(f"Unknown route type: {route_name}")
+        stage_logs.append("Unknown Route")
+        result_text = "No handler for this route."
 
-        retriever = Retriever(
-            texts=cache["texts"],
-            metadatas=cache["metadatas"],
-            vectors=cache["vectors"]
-        )
+    # Display final result and logs
+    st.markdown("---")
+    st.subheader("🧾 Final Result")
+    st.code(result_text or "No result produced.", language="text")
 
-        with st.spinner("Retrieving chunks..."):
-            ret = retriever.retrieve(query=query, top_k=5, rerank=True)
+    st.subheader("📋 Execution Log")
+    for entry in stage_logs:
+        st.write("-", entry)
 
-        chunks = [c["text"] for c in ret["candidates"]]
-
-        with st.spinner("Generating answer..."):
-            answer = multimedia_response(query, chunks)
-
-        st.success("✅ Final Answer (Policy only)")
-        st.write(answer)
-
+    # clear the saved query so user can type a new one
+    if "query_to_run" in st.session_state:
+        del st.session_state["query_to_run"]
