@@ -1074,25 +1074,25 @@ with tab1:
 
 
 # ------------------------------------------------
-# ✅ TAB 2 — Mongo Document Agent (uv-run JSON mode)
+# ✅ TAB 2 — Mongo Agent (capture raw terminal logs)
 # ------------------------------------------------
 with tab2:
 
-    st.header("🗄️ Mongo Document Query — HR BOT")
-    st.markdown("This runs `src/app.py` via uv, passing email + query, and returns JSON output.")
+    st.header("🗄️ Mongo HR Agent — Raw Mode (Stable)")
 
     email = st.text_input("User Email")
     query = st.text_area("Document Query", height=150)
 
-    if st.button("Run Document Query (uv)"):
+    if st.button("Run Document Query"):
 
         if not email.strip() or not query.strip():
-            st.warning("⚠️ Please enter BOTH email and query.")
+            st.warning("Please enter BOTH Email and Query.")
             st.stop()
 
-        import subprocess, json as _json, shlex
+        st.markdown("### 🔧 Executing Pipeline...")
 
-        # ✅ FINAL FIX — no --active
+        import subprocess, shlex
+
         uv_cmd = [
             "uv", "run",
             "src/app.py",
@@ -1100,10 +1100,9 @@ with tab2:
             "--query", query
         ]
 
-        st.write("### 🔧 Running command:")
-        st.code(" ".join(shlex.quote(p) for p in uv_cmd))
+        st.code(" ".join(shlex.quote(x) for x in uv_cmd))
 
-        # LIVE LOG STREAM
+        # Live log capture
         log_box = st.empty()
         logs = []
 
@@ -1116,25 +1115,32 @@ with tab2:
                 cwd=ROOT_DIR,
                 bufsize=1
             )
-        except FileNotFoundError:
-            st.error("❌ `uv` command not found. Install uv.")
+        except Exception as e:
+            st.error("Failed to run uv.")
+            st.code(str(e))
             st.stop()
 
+        # ✅ Stream output
         for line in proc.stdout:
-            logs.append(line.rstrip())
+            logs.append(line.rstrip("\n"))
             log_box.code("\n".join(logs[-200:]))
 
         proc.wait()
 
-        # FULL LOG
-        st.subheader("📄 Full Terminal Log")
+        # ✅ Show final full logs
+        st.subheader("📄 Full Logs")
         st.code("\n".join(logs))
 
-        # ✅ EXTRACT FINAL JSON
-        st.subheader("✅ Final Output")
-        try:
-            final_json = _json.loads(logs[-1])
-            st.json(final_json)
-        except Exception:
-            st.error("❌ Could not parse final line as JSON.")
+        # ✅ Extract final human answer
+        final_answer = None
+        for line in reversed(logs):
+            if "@" in line or "ID is" in line or "No messages" in line:
+                final_answer = line.strip()
+                break
+
+        st.subheader("✅ Final Answer")
+        if final_answer:
+            st.success(final_answer)
+        else:
+            st.warning("Could not detect final answer. Showing last line instead:")
             st.code(logs[-1])
