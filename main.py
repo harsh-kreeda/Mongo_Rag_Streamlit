@@ -925,7 +925,7 @@ try:
     else:
         # st.error("`run_document_query` NOT FOUND in app.py")
 except Exception as e:
-    # st.error("Error loading app.py:")
+    st.error("Error loading app.py:")
     st.code(traceback.format_exc())
 
 
