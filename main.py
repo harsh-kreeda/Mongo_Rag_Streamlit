@@ -532,7 +532,9 @@ with tab1:
             st.code(traceback.format_exc())
             st.stop()
 
-        st.json(ret)
+        with st.expander("Retrieved Result JSON (Click to Expand)", expanded=False):
+            st.json(ret)
+
 
         if "error" in ret:
             st.error("Retriever returned error:", ret["error"])
@@ -541,7 +543,7 @@ with tab1:
         candidates = ret.get("candidates", [])
         chunks = [c["text"] for c in candidates]
 
-        with st.expander("📄 Retrieved Chunks (Click to Expand)", expanded=False):
+        with st.expander("Retrieved Chunks (Click to Expand)", expanded=False):
             for i, c in enumerate(chunks):
                 st.markdown(f"### Chunk {i+1}")
                 st.code(c)
