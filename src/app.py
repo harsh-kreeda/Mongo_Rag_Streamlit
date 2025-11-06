@@ -180,17 +180,24 @@ def parse_args():
 # ------------------------------------------------------------
 # ✅ 5. MAIN EXECUTION (UV MODE)
 # ------------------------------------------------------------
+# -------------- Run Locally / CLI --------------
 if __name__ == "__main__":
-    email, query = parse_args()
-    result = run_pipeline(email, query)
+    email = args.email
+    query = args.query
 
-    #  ONLY print JSON so Streamlit can parse it
-    #  Extract just the final answer (string)
-        final_answer = result.get("mongo_output") or result.get("final_answer") or ""
-        
-        #  Clean fallback
-        if not final_answer:
-            final_answer = str(result)
-        
-        print(final_answer)
+    result = run_document_query(email, query)
+
+    # ✅ Extract final textual answer only
+    final_answer = (
+        result.get("mongo_output")
+        or result.get("final_answer")
+        or result.get("answer")
+        or ""
+    )
+
+    if not final_answer:
+        # fallback: stringify entire dict (safe)
+        final_answer = str({k: str(v) for k, v in result.items()})
+
+    print(final_answer)
 
