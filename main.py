@@ -919,11 +919,11 @@ try:
     attrs = dir(App_mod)
     st.json([x for x in attrs if not x.startswith("_")])
 
-    if "run_document_query" in attrs:
-        run_document_query = getattr(App_mod, "run_document_query")
-        # st.success("Found `run_document_query()`")
-    else:
-        # st.error("`run_document_query` NOT FOUND in app.py")
+    # if "run_document_query" in attrs:
+    #     run_document_query = getattr(App_mod, "run_document_query")
+    #     # st.success("Found `run_document_query()`")
+    # else:
+    #     st.error("`run_document_query` NOT FOUND in app.py")
 except Exception as e:
     st.error("Error loading app.py:")
     st.code(traceback.format_exc())
