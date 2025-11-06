@@ -963,19 +963,70 @@ with tab2:
 
     if st.button("Run Document Query"):
 
-        if run_document_query is None:
-            st.error("❌ run_document_query() is NOT loaded — check above logs.")
-            st.stop()
-
         if not email.strip() or not query.strip():
             st.warning("⚠️ Please enter BOTH Email and Query.")
             st.stop()
 
-        with st.spinner("🚀 Running Document Agent..."):
-            try:
-                output = run_document_query(email, query)
-                st.success("✅ Completed")
-                st.json(output)
-            except Exception as e:
-                st.error("❌ Document Agent CRASHED")
-                st.code(traceback.format_exc())
+        st.markdown("### 🔍 Running `app.py`…")
+
+        # ---------------------------------------------------------
+        # ✅ 1. LOAD THE MODULE ALWAYS
+        # ---------------------------------------------------------
+        try:
+            App_mod = load_src_module("app")   # loads src/app.py
+            st.success("✅ app.py loaded successfully")
+        except Exception:
+            st.error("❌ app.py failed to load:")
+            st.code(traceback.format_exc())
+            st.stop()
+
+        # ---------------------------------------------------------
+        # ✅ 2. Inject parameters into the script
+        # ---------------------------------------------------------
+        try:
+            App_mod.email = email
+            App_mod.NATURAL_LANGUAGE_QUERY = query
+            st.write("✅ Injected parameters into app.py:")
+            st.json({
+                "email": email,
+                "query": query
+            })
+        except Exception:
+            st.error("❌ Failed injecting parameters into app.py:")
+            st.code(traceback.format_exc())
+            st.stop()
+
+        # ---------------------------------------------------------
+        # ✅ 3. CAPTURE app.py OUTPUT
+        # ---------------------------------------------------------
+        import io
+        import contextlib
+
+        buffer = io.StringIO()
+
+        st.markdown("### 📄 Raw Execution Log (from app.py)")
+        try:
+            with contextlib.redirect_stdout(buffer):
+                # ✅ If app.py has a main(), use it. Else re-run top-level code.
+                if hasattr(App_mod, "main"):
+                    App_mod.main()
+                else:
+                    # Re-run the module code safely
+                    spec = importlib.util.spec_from_file_location("src.app", os.path.join(SRC_DIR, "app.py"))
+                    mod = importlib.util.module_from_spec(spec)
+
+                    # Inject params before execution
+                    mod.email = email
+                    mod.NATURAL_LANGUAGE_QUERY = query
+
+                    spec.loader.exec_module(mod)
+
+            full_output = buffer.getvalue()
+            st.code(full_output)
+
+            st.success("✅ app.py executed successfully")
+
+        except Exception as e:
+            st.error("❌ app.py crashed:")
+            st.code(traceback.format_exc())
+            st.stop()
