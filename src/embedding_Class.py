@@ -73,10 +73,17 @@ except Exception:
     MongoClient = None  # noqa: F401
 
 # PDFs
+# PDFs — with full debug logging
 try:
-    from pypdf import PdfReader  # robust + lightweight
-except Exception:
-    PdfReader = None  # noqa: F401
+    import pypdf
+    from pypdf import PdfReader
+    _print(f"[DEBUG] ✅ pypdf imported successfully — version: {pypdf.__version__}")
+except Exception as e:
+    PdfReader = None
+    # Print the actual error so we know WHY import failed
+    _print(f"[DEBUG] ❌ Failed to import pypdf / PdfReader")
+    _print(f"[DEBUG] Import error details: {e}")
+
 
 # Excel/CSV
 import csv
