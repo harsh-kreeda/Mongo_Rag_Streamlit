@@ -1,4 +1,5 @@
-from Mongo import NaturalLanguageToMQL
+from src.Mongo import NaturalLanguageToMQL
+
 from langchain_core.messages import HumanMessage
 from langgraph_sample import access_agent
 
