@@ -43,7 +43,7 @@ except Exception:
     ChatOpenAI = None  # type: ignore
 
 try:
-    from langchain.embeddings import OpenAIEmbeddings  # optional
+    from langchain_community.embeddings import OpenAIEmbeddings # optional
 except Exception:
     OpenAIEmbeddings = None  # type: ignore
 
