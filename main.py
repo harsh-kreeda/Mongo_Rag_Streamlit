@@ -618,7 +618,7 @@ except Exception as e:
 
 # multimedia may be optional — but we try to load it the same way
 try:
-    Multi_mod = load_src_module("Multimedia")
+    Multi_mod = load_src_module("Mutlimedia")
     multimedia_response = getattr(Multi_mod, "multimedia_response", None)
 except Exception as e:
     # don't hard-stop here; we can still use policy_handler_from_retriever if present
