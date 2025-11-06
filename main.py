@@ -284,250 +284,467 @@
 
 #         st.caption("✅ Process completed successfully — all stages ran in same thread.")
 
-# main.py — Streamlit front-end (single-tab query + email)
+# # main.py — Streamlit front-end (single-tab query + email)
+# import streamlit as st
+# from datetime import datetime, timezone
+# import traceback
+# import os
+
+# # Router (existing)
+# from src.Router_gpt import classify_query, RouteType
+
+# # Import local modules (embedding + retriever + multimedia)
+# # They live under src/
+# try:
+#     from src.embedding_Class import RAGIndexer
+# except Exception as e:
+#     st.error(f"Failed to import embedding_Class: {e}")
+#     st.stop()
+
+# try:
+#     from src.retrival_class import Retriever, policy_handler_from_retriever
+# except Exception as e:
+#     st.error(f"Failed to import retrival_class: {e}")
+#     st.stop()
+
+# # multimedia.py is optional — policy_handler_from_retriever already produces answers,
+# # but we'll import multimedia_response if you want to pass chunks to it in future.
+# try:
+#     from src.multimedia import multimedia_response
+# except Exception:
+#     multimedia_response = None  # optional
+
+# # --------------------------
+# # Page config
+# # --------------------------
+# st.set_page_config(page_title="Mongo_RAG - Query", page_icon="📚", layout="wide")
+# st.title("📚 Mongo_RAG — Query (Single Tab)")
+
+# # --------------------------
+# # Session-state helpers
+# # --------------------------
+# if "rag_cache" not in st.session_state:
+#     st.session_state.rag_cache = None  # will hold {'texts','vectors','metadatas','embed_model'}
+
+# if "last_embedded" not in st.session_state:
+#     st.session_state.last_embedded = None
+
+# if "last_run" not in st.session_state:
+#     st.session_state.last_run = None
+
+# # --------------------------
+# # Controls: Email + Query + Actions
+# # --------------------------
+# with st.container():
+#     col1, col2 = st.columns([3, 1])
+#     with col1:
+#         email = st.text_input("User Email (for audit / routing)", value=st.session_state.get("user_email", ""))
+#         query = st.text_area("Enter your question", height=120, placeholder="e.g. How do I find my leave balance?")
+#     with col2:
+#         st.write("")  # spacer
+#         if st.button("Run Query"):
+#             st.session_state.user_email = email.strip()
+#             st.session_state.query_to_run = query.strip()
+#             st.session_state.last_run = datetime.now(timezone.utc).isoformat()
+
+#         if st.button("Rebuild embeddings (force)"):
+#             # Clear stored cache and prompt rebuild on next request
+#             st.session_state.rag_cache = None
+#             st.info("Embeddings cache cleared — the next Run Query will rebuild embeddings.")
+
+# # --------------------------
+# # Ensure we have a (single) embedding index loaded in session
+# # - If not present, build it synchronously now (using Dataset/Policies)
+# # --------------------------
+# def build_index_from_policies():
+#     """Build RAG index from local Dataset/Policies and store in session state."""
+#     try:
+#         with st.spinner("Building embeddings from Dataset/Policies (this runs once per session)..."):
+#             idx = RAGIndexer(
+#                 local_paths=["Dataset/Policies"],
+#                 s3_urls=None,
+#                 workdir="rag_work",
+#                 embed_model="text-embedding-3-large",
+#                 max_tokens=900,
+#                 overlap=150,
+#                 min_chunk_chars=280,
+#             )
+#             idx.build()
+
+#             if not idx.texts or idx.vectors is None:
+#                 st.error("Embedding pipeline completed but returned no data. Check files in Dataset/Policies.")
+#                 return False
+
+#             # Save to session_state
+#             st.session_state.rag_cache = {
+#                 "texts": idx.texts,
+#                 "vectors": idx.vectors,
+#                 "metadatas": idx.metadatas,
+#                 "embed_model": idx.cfg.embed_model if hasattr(idx, "cfg") else "text-embedding-3-large",
+#             }
+#             st.session_state.last_embedded = datetime.now(timezone.utc).isoformat()
+#             st.success(f"Embeddings ready — {len(idx.texts)} chunks loaded.")
+#             return True
+#     except Exception as e:
+#         st.error("Failed to build embeddings:")
+#         st.code(traceback.format_exc())
+#         return False
+
+# # If no cache, build now (synchronous)
+# if st.session_state.rag_cache is None:
+#     build_index_from_policies()
+
+# # --------------------------
+# # Run the pipeline when user pressed Run Query
+# # --------------------------
+# if st.session_state.get("query_to_run"):
+#     q = st.session_state["query_to_run"]
+#     st.markdown("---")
+#     st.subheader("🔎 Execution Trace")
+
+#     st.write("User:", st.session_state.get("user_email", "N/A"))
+#     st.write("Query submitted at (UTC):", st.session_state.get("last_run"))
+
+#     # 1) Classify
+#     with st.spinner("Classifying query..."):
+#         try:
+#             router_response = classify_query(q)
+#         except Exception as e:
+#             st.error(f"Router crashed: {e}")
+#             st.code(traceback.format_exc())
+#             st.stop()
+
+#     # Validate router response format
+#     if isinstance(router_response, dict) and "error" in router_response:
+#         st.error(f"Router error: {router_response}")
+#         st.stop()
+
+#     try:
+#         route, confidence, reason, doc_q, pol_q = router_response
+#     except Exception:
+#         st.error("Router returned unexpected format.")
+#         st.write(router_response)
+#         st.stop()
+
+#     st.write("Router decision:", getattr(route, "value", str(route)))
+#     st.write("Confidence:", confidence)
+#     st.write("Reason:", reason)
+
+#     result_text = ""
+#     stage_logs = []
+
+#     # Handle routes
+#     route_name = getattr(route, "value", str(route)).lower()
+
+#     if route_name == "document":
+#         st.info("🗂 Document route selected — currently unavailable.")
+#         stage_logs.append("Router → Document Handler (NOT IMPLEMENTED)")
+#         result_text = "Document handler is currently unavailable."
+
+#     elif route_name == "policy":
+#         stage_logs.append("Router → Policy Handler")
+#         st.info("📜 Policy handler — retrieving from in-memory index.")
+
+#         # Ensure embeddings present
+#         cache = st.session_state.rag_cache
+#         if not cache:
+#             st.error("No embeddings present. Please upload/persist or rebuild embeddings first.")
+#             st.stop()
+
+#         # Instantiate Retriever once per run (lightweight)
+#         try:
+#             retr = Retriever(
+#                 texts=cache["texts"],
+#                 metadatas=cache.get("metadatas", [{}] * len(cache["texts"])),
+#                 vectors=cache["vectors"],
+#                 embed_model=cache.get("embed_model"),
+#             )
+#         except Exception as e:
+#             st.error(f"Failed to create Retriever: {e}")
+#             st.code(traceback.format_exc())
+#             st.stop()
+
+#         # Use policy_handler_from_retriever for a safe pipeline (returns answer + chunks)
+#         try:
+#             with st.spinner("Running retrieval + (optional) rerank + answer generation..."):
+#                 answer, context_chunks = policy_handler_from_retriever(retr, q, top_k=5, rerank=True)
+#         except Exception as e:
+#             st.error(f"Policy pipeline failed: {e}")
+#             st.code(traceback.format_exc())
+#             st.stop()
+
+#         # Present the outputs
+#         if isinstance(answer, str) and answer.startswith("ERROR"):
+#             st.error(answer)
+#         else:
+#             st.success("✅ Policy handler executed.")
+#             st.subheader("📄 Final Answer")
+#             st.write(answer)
+
+#             with st.expander("🔎 Retrieved Chunks (for debugging)", expanded=False):
+#                 for i, c in enumerate(context_chunks):
+#                     st.markdown(f"**Chunk #{i+1}** (first 600 chars):")
+#                     st.code(c[:600], language="text")
+
+#             result_text = answer
+
+#     elif route_name == "both":
+#         # Run policy; document is unavailable
+#         stage_logs.append("Router → Both (Document + Policy)")
+#         st.info("Running policy part (document handler is unavailable).")
+
+#         cache = st.session_state.rag_cache
+#         if not cache:
+#             st.error("No embeddings present. Please rebuild.")
+#             st.stop()
+
+#         retr = Retriever(
+#             texts=cache["texts"],
+#             metadatas=cache.get("metadatas", [{}] * len(cache["texts"])),
+#             vectors=cache["vectors"],
+#             embed_model=cache.get("embed_model"),
+#         )
+
+#         try:
+#             with st.spinner("Running policy retrieval..."):
+#                 answer, context_chunks = policy_handler_from_retriever(retr, pol_q or q, top_k=5, rerank=True)
+#         except Exception as e:
+#             st.error(f"Policy part failed: {e}")
+#             st.code(traceback.format_exc())
+#             st.stop()
+
+#         result_text = f"--- POLICY RESULT ---\n{answer}\n\n--- DOCUMENT RESULT ---\nCurrently unavailable."
+
+#     else:
+#         st.warning(f"Unknown route type: {route_name}")
+#         stage_logs.append("Unknown Route")
+#         result_text = "No handler for this route."
+
+#     # Display final result and logs
+#     st.markdown("---")
+#     st.subheader("🧾 Final Result")
+#     st.code(result_text or "No result produced.", language="text")
+
+#     st.subheader("📋 Execution Log")
+#     for entry in stage_logs:
+#         st.write("-", entry)
+
+#     # clear the saved query so the user can type a new one
+#     del st.session_state["query_to_run"]
+
+# main.py — Streamlit UI for Router -> Policy RAG pipeline
 import streamlit as st
-from datetime import datetime, timezone
 import traceback
 import os
+from datetime import datetime, timezone
+import importlib
 
-# Router (existing)
-from src.Router_gpt import classify_query, RouteType
+# ============================================================
+# ✅ FIXED IMPORT PATHS FOR STREAMLIT CLOUD
+# ============================================================
 
-# Import local modules (embedding + retriever + multimedia)
-# They live under src/
-try:
-    from src.embedding_Class import RAGIndexer
-except Exception as e:
-    st.error(f"Failed to import embedding_Class: {e}")
-    st.stop()
+# Router Classification
+from mongo_rag_streamlit.src.Router_gpt import classify_query, RouteType
 
-try:
-    from src.retrival_class import Retriever, policy_handler_from_retriever
-except Exception as e:
-    st.error(f"Failed to import retrival_class: {e}")
-    st.stop()
+# Core RAG Components
+embedding_module = importlib.import_module("mongo_rag_streamlit.src.embedding_Class")
+retrieval_module = importlib.import_module("mongo_rag_streamlit.src.retrival_class")
+multimedia_module = importlib.import_module("mongo_rag_streamlit.src.multimedia")
+runner_module = importlib.import_module("mongo_rag_streamlit.src.runner")
 
-# multimedia.py is optional — policy_handler_from_retriever already produces answers,
-# but we'll import multimedia_response if you want to pass chunks to it in future.
-try:
-    from src.multimedia import multimedia_response
-except Exception:
-    multimedia_response = None  # optional
+RAGIndexer = embedding_module.RAGIndexer
+Retriever = retrieval_module.Retriever
+multimedia_response = multimedia_module.multimedia_response
+run_pipeline = runner_module.run_pipeline   # NEW: main callable pipeline
 
-# --------------------------
-# Page config
-# --------------------------
-st.set_page_config(page_title="Mongo_RAG - Query", page_icon="📚", layout="wide")
-st.title("📚 Mongo_RAG — Query (Single Tab)")
+# ============================================================
+# STREAMLIT PAGE CONFIG
+# ============================================================
+st.set_page_config(page_title="Policy RAG", page_icon="📘", layout="wide")
+st.title("📘 Tata Play – Policy RAG Assistant")
 
-# --------------------------
-# Session-state helpers
-# --------------------------
+st.markdown("""
+This application loads all organizational policies into memory once per session  
+and answers user queries using Retrieval-Augmented Generation (RAG).
+""")
+
+# ============================================================
+# SESSION MEMORY (Embeddings cached inside session)
+# ============================================================
 if "rag_cache" not in st.session_state:
-    st.session_state.rag_cache = None  # will hold {'texts','vectors','metadatas','embed_model'}
+    st.session_state["rag_cache"] = None
 
-if "last_embedded" not in st.session_state:
-    st.session_state.last_embedded = None
 
-if "last_run" not in st.session_state:
-    st.session_state.last_run = None
+# ============================================================
+# ✅ STEP 1 — AUTOMATIC EMBEDDING ON FIRST RUN
+# ============================================================
+def initialize_embeddings():
+    """Loads and embeds Dataset/Policies exactly once per Streamlit session."""
+    
+    if st.session_state["rag_cache"] is not None:
+        st.info("✅ Embeddings already loaded in RAM for this session.")
+        return True
 
-# --------------------------
-# Controls: Email + Query + Actions
-# --------------------------
-with st.container():
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        email = st.text_input("User Email (for audit / routing)", value=st.session_state.get("user_email", ""))
-        query = st.text_area("Enter your question", height=120, placeholder="e.g. How do I find my leave balance?")
-    with col2:
-        st.write("")  # spacer
-        if st.button("Run Query"):
-            st.session_state.user_email = email.strip()
-            st.session_state.query_to_run = query.strip()
-            st.session_state.last_run = datetime.now(timezone.utc).isoformat()
+    st.warning("⚠️ Embeddings not found in RAM — building now...")
+    with st.spinner("Embedding documents from Dataset/Policies... (one-time)"):
 
-        if st.button("Rebuild embeddings (force)"):
-            # Clear stored cache and prompt rebuild on next request
-            st.session_state.rag_cache = None
-            st.info("Embeddings cache cleared — the next Run Query will rebuild embeddings.")
-
-# --------------------------
-# Ensure we have a (single) embedding index loaded in session
-# - If not present, build it synchronously now (using Dataset/Policies)
-# --------------------------
-def build_index_from_policies():
-    """Build RAG index from local Dataset/Policies and store in session state."""
-    try:
-        with st.spinner("Building embeddings from Dataset/Policies (this runs once per session)..."):
+        try:
+            # Build fresh embeddings
             idx = RAGIndexer(
-                local_paths=["Dataset/Policies"],
+                local_paths=["Dataset/Policies"],       # ✅ Hard-coded repo folder
                 s3_urls=None,
                 workdir="rag_work",
-                embed_model="text-embedding-3-large",
-                max_tokens=900,
-                overlap=150,
-                min_chunk_chars=280,
+                embed_model="text-embedding-3-large"
             )
             idx.build()
 
             if not idx.texts or idx.vectors is None:
-                st.error("Embedding pipeline completed but returned no data. Check files in Dataset/Policies.")
+                st.error("❌ Failed to load embeddings — no data extracted.")
                 return False
 
-            # Save to session_state
-            st.session_state.rag_cache = {
+            # Save to Streamlit session
+            st.session_state["rag_cache"] = {
                 "texts": idx.texts,
                 "vectors": idx.vectors,
-                "metadatas": idx.metadatas,
-                "embed_model": idx.cfg.embed_model if hasattr(idx, "cfg") else "text-embedding-3-large",
+                "metadatas": idx.metadatas
             }
-            st.session_state.last_embedded = datetime.now(timezone.utc).isoformat()
-            st.success(f"Embeddings ready — {len(idx.texts)} chunks loaded.")
+
+            st.success(f"✅ Loaded {len(idx.texts)} chunks into RAM.")
             return True
-    except Exception as e:
-        st.error("Failed to build embeddings:")
-        st.code(traceback.format_exc())
-        return False
 
-# If no cache, build now (synchronous)
-if st.session_state.rag_cache is None:
-    build_index_from_policies()
-
-# --------------------------
-# Run the pipeline when user pressed Run Query
-# --------------------------
-if st.session_state.get("query_to_run"):
-    q = st.session_state["query_to_run"]
-    st.markdown("---")
-    st.subheader("🔎 Execution Trace")
-
-    st.write("User:", st.session_state.get("user_email", "N/A"))
-    st.write("Query submitted at (UTC):", st.session_state.get("last_run"))
-
-    # 1) Classify
-    with st.spinner("Classifying query..."):
-        try:
-            router_response = classify_query(q)
         except Exception as e:
-            st.error(f"Router crashed: {e}")
+            st.error("❌ Embedding pipeline failed.")
             st.code(traceback.format_exc())
-            st.stop()
+            return False
 
-    # Validate router response format
-    if isinstance(router_response, dict) and "error" in router_response:
-        st.error(f"Router error: {router_response}")
+
+# ============================================================
+# ✅ EMAIL INPUT
+# ============================================================
+st.subheader("📧 User Identification")
+email = st.text_input("Enter your email", placeholder="your.name@tataplay.com")
+
+# ============================================================
+# ✅ QUERY INPUT
+# ============================================================
+st.subheader("💬 Ask a Policy Question")
+
+query = st.text_area(
+    "Enter your question",
+    placeholder="e.g. How do I check my leave balance?",
+    height=120
+)
+
+run_btn = st.button("Run Query")
+
+
+# ============================================================
+# ✅ MAIN EXECUTION PIPELINE
+# ============================================================
+if run_btn:
+
+    if not email.strip():
+        st.error("Please enter your email first.")
         st.stop()
 
-    try:
-        route, confidence, reason, doc_q, pol_q = router_response
-    except Exception:
-        st.error("Router returned unexpected format.")
-        st.write(router_response)
+    if not query.strip():
+        st.error("Please enter a question.")
         st.stop()
 
-    st.write("Router decision:", getattr(route, "value", str(route)))
-    st.write("Confidence:", confidence)
-    st.write("Reason:", reason)
+    # Load embeddings once
+    ok = initialize_embeddings()
+    if not ok:
+        st.stop()
 
-    result_text = ""
-    stage_logs = []
+    st.session_state["last_run"] = datetime.now(timezone.utc).isoformat()
 
-    # Handle routes
-    route_name = getattr(route, "value", str(route)).lower()
+    # --------------------------------------------------------
+    # ✅ STEP 2 — ROUTE QUERY
+    # --------------------------------------------------------
+    st.subheader("🔍 Step 1 — Routing Query")
 
-    if route_name == "document":
-        st.info("🗂 Document route selected — currently unavailable.")
-        stage_logs.append("Router → Document Handler (NOT IMPLEMENTED)")
-        result_text = "Document handler is currently unavailable."
+    with st.spinner("Classifying your query..."):
+        route_result = classify_query(query)
 
-    elif route_name == "policy":
-        stage_logs.append("Router → Policy Handler")
-        st.info("📜 Policy handler — retrieving from in-memory index.")
+    if isinstance(route_result, dict) and "error" in route_result:
+        st.error(route_result["error"])
+        st.stop()
 
-        # Ensure embeddings present
-        cache = st.session_state.rag_cache
-        if not cache:
-            st.error("No embeddings present. Please upload/persist or rebuild embeddings first.")
-            st.stop()
+    route, confidence, reason, doc_q, pol_q = route_result
 
-        # Instantiate Retriever once per run (lightweight)
-        try:
-            retr = Retriever(
-                texts=cache["texts"],
-                metadatas=cache.get("metadatas", [{}] * len(cache["texts"])),
-                vectors=cache["vectors"],
-                embed_model=cache.get("embed_model"),
-            )
-        except Exception as e:
-            st.error(f"Failed to create Retriever: {e}")
-            st.code(traceback.format_exc())
-            st.stop()
+    st.write(f"**Route:** {route.value} (confidence {confidence})")
+    st.caption(f"Reason: {reason}")
 
-        # Use policy_handler_from_retriever for a safe pipeline (returns answer + chunks)
-        try:
-            with st.spinner("Running retrieval + (optional) rerank + answer generation..."):
-                answer, context_chunks = policy_handler_from_retriever(retr, q, top_k=5, rerank=True)
-        except Exception as e:
-            st.error(f"Policy pipeline failed: {e}")
-            st.code(traceback.format_exc())
-            st.stop()
+    st.divider()
 
-        # Present the outputs
-        if isinstance(answer, str) and answer.startswith("ERROR"):
-            st.error(answer)
-        else:
-            st.success("✅ Policy handler executed.")
-            st.subheader("📄 Final Answer")
-            st.write(answer)
+    # --------------------------------------------------------
+    # ✅ STEP 3 — POLICY / DOCUMENT HANDLING
+    # --------------------------------------------------------
 
-            with st.expander("🔎 Retrieved Chunks (for debugging)", expanded=False):
-                for i, c in enumerate(context_chunks):
-                    st.markdown(f"**Chunk #{i+1}** (first 600 chars):")
-                    st.code(c[:600], language="text")
+    if route.value == "policy":
+        st.subheader("📘 Step 2 — Policy Retrieval")
 
-            result_text = answer
+        with st.spinner("Running policy retrieval..."):
+            try:
+                # Reuse cached embeddings
+                cache = st.session_state["rag_cache"]
 
-    elif route_name == "both":
-        # Run policy; document is unavailable
-        stage_logs.append("Router → Both (Document + Policy)")
-        st.info("Running policy part (document handler is unavailable).")
+                retriever = Retriever(
+                    texts=cache["texts"],
+                    metadatas=cache["metadatas"],
+                    vectors=cache["vectors"]
+                )
 
-        cache = st.session_state.rag_cache
-        if not cache:
-            st.error("No embeddings present. Please rebuild.")
-            st.stop()
+                retrieval_output = retriever.retrieve(pol_q or query, top_k=5, rerank=True)
 
-        retr = Retriever(
-            texts=cache["texts"],
-            metadatas=cache.get("metadatas", [{}] * len(cache["texts"])),
-            vectors=cache["vectors"],
-            embed_model=cache.get("embed_model"),
-        )
+                if "error" in retrieval_output:
+                    st.error(retrieval_output["error"])
+                    st.stop()
 
-        try:
-            with st.spinner("Running policy retrieval..."):
-                answer, context_chunks = policy_handler_from_retriever(retr, pol_q or q, top_k=5, rerank=True)
-        except Exception as e:
-            st.error(f"Policy part failed: {e}")
-            st.code(traceback.format_exc())
-            st.stop()
+                context_chunks = [c["text"] for c in retrieval_output["candidates"]]
 
-        result_text = f"--- POLICY RESULT ---\n{answer}\n\n--- DOCUMENT RESULT ---\nCurrently unavailable."
+                final_answer = multimedia_response(pol_q or query, context_chunks)
 
-    else:
-        st.warning(f"Unknown route type: {route_name}")
-        stage_logs.append("Unknown Route")
-        result_text = "No handler for this route."
+                st.success("✅ Final Answer")
+                st.write(final_answer)
 
-    # Display final result and logs
-    st.markdown("---")
-    st.subheader("🧾 Final Result")
-    st.code(result_text or "No result produced.", language="text")
+            except Exception as e:
+                st.error("❌ Policy handler crashed.")
+                st.code(traceback.format_exc())
 
-    st.subheader("📋 Execution Log")
-    for entry in stage_logs:
-        st.write("-", entry)
+    elif route.value == "document":
+        st.subheader("📄 Step 2 — Document Search")
+        st.info("📄 Document search is **not implemented yet**.")
+        st.stop()
 
-    # clear the saved query so the user can type a new one
-    del st.session_state["query_to_run"]
+    elif route.value == "both":
+        st.subheader("🔄 Both Policy + Document")
+        st.info("📄 Document search is not implemented yet.  
+        ✅ Running policy handler only...")
+
+        with st.spinner("Running policy retrieval..."):
+            try:
+                cache = st.session_state["rag_cache"]
+                retriever = Retriever(
+                    texts=cache["texts"],
+                    metadatas=cache["metadatas"],
+                    vectors=cache["vectors"]
+                )
+
+                retrieval_output = retriever.retrieve(pol_q or query, top_k=5, rerank=True)
+                context_chunks = [c["text"] for c in retrieval_output["candidates"]]
+                final_answer = multimedia_response(pol_q or query, context_chunks)
+
+                st.success("✅ Final Answer (Policy Only)")
+                st.write(final_answer)
+
+            except Exception as e:
+                st.error("❌ Combined route failed.")
+                st.code(traceback.format_exc())
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+if "last_run" in st.session_state:
+    st.caption(f"Last run: {st.session_state['last_run']}")
