@@ -541,10 +541,11 @@ with tab1:
         candidates = ret.get("candidates", [])
         chunks = [c["text"] for c in candidates]
 
-        with st.expander("Retrieved Chunks (Click to Expand)", expanded=False):
+        with st.expander("📄 Retrieved Chunks (Click to Expand)", expanded=False):
             for i, c in enumerate(chunks):
                 st.markdown(f"### Chunk {i+1}")
                 st.code(c)
+
 
 
 
