@@ -753,7 +753,7 @@ if st.session_state.query_to_run:
 
     st.write("📌 Running retriever.retrieve() ...")
     try:
-        ret = retr.retrieve(q, top_k=5, rerank=True)
+        ret = retr.retrieve(q, top_k=10, rerank=True)
     except Exception as e:
         st.error("Retriever failed:")
         st.code(traceback.format_exc())
@@ -769,7 +769,7 @@ if st.session_state.query_to_run:
     candidates = ret.get("candidates", [])
     chunks = [c["text"] for c in candidates]
 
-    st.subheader("📄 Retrieved Chunks (Top 5)")
+    st.subheader("📄 Retrieved Chunks (Top 10)")
     for i, c in enumerate(chunks):
         st.code(f"[Chunk {i+1}] {c[:800]}")
 
