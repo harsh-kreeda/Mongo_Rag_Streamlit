@@ -8,8 +8,24 @@ from typing import List, Dict, Tuple
 from openai import OpenAI
 from langchain.memory import ChatMessageHistory
 
-from src.retrival_class import Retriever
-from src.Multimedia import get_api_key  # ✅ reuse same API key helper for consistency
+from retrival_class import Retriever
+
+from dotenv import load_dotenv
+load_dotenv()
+
+def get_api_key():
+    api_key = None
+
+    if st and hasattr(st, "secrets"):
+        api_key = st.secrets.get("OPENAI_API_KEY")
+
+    if not api_key:
+        api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("Missing OPENAI_API_KEY")
+
+    return api_key
 
 
 # ============================================================
