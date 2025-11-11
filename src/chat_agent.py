@@ -5,9 +5,11 @@ import traceback
 from datetime import datetime
 from typing import List, Dict, Tuple
 
+import streamlit as st                         # ✅ REQUIRED (you used st in get_api_key)
 from openai import OpenAI
 from langchain.memory import ChatMessageHistory
 
+# ✅ Import retriever EXACTLY like main.py loads it (local import)
 from retrival_class import Retriever
 
 from dotenv import load_dotenv
