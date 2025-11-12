@@ -342,9 +342,11 @@ def _read_ppt_text(path: Path) -> str:
     """
     Extract readable text from PowerPoint files (.ppt, .pptx).
     Primary backend: python-pptx (fast + structured)
-    Fallback: unstructured partition_pptx (more robust)
+    Fallback: unstructured.partition_pptx (more robust)
     Returns text-only content; ignores images, tables, and notes.
     """
+    _print(f"[PPT] Attempting extraction: {path}")
+
     text_collected = []
 
     # -------------------------------
@@ -352,7 +354,9 @@ def _read_ppt_text(path: Path) -> str:
     # -------------------------------
     try:
         from pptx import Presentation
+        _print("[PPT] ✅ Using python-pptx backend")
         pres = Presentation(str(path))
+
         for i, slide in enumerate(pres.slides):
             slide_texts = []
             for shape in slide.shapes:
@@ -363,8 +367,13 @@ def _read_ppt_text(path: Path) -> str:
                     continue
             if slide_texts:
                 text_collected.append(f"[[SLIDE {i+1}]]\n" + "\n".join(slide_texts))
+
         if text_collected:
+            _print(f"[PPT] ✅ Successfully extracted text from {len(text_collected)} slides via python-pptx")
             return "\n\n".join(text_collected)
+        else:
+            _print("[PPT] ⚠️ No visible text found via python-pptx, trying fallback…")
+
     except Exception as e:
         _print(f"[PPT] ❌ python-pptx failed: {e}")
 
@@ -373,11 +382,14 @@ def _read_ppt_text(path: Path) -> str:
     # -------------------------------
     try:
         from unstructured.partition.pptx import partition_pptx
+        _print("[PPT] 🔄 Trying fallback: unstructured.partition.pptx")
         elements = partition_pptx(filename=str(path))
         t = "\n".join(el.text for el in elements if getattr(el, "text", None))
         if t.strip():
-            _print("[PPT] ✅ Extracted via unstructured.partition.pptx")
+            _print("[PPT] ✅ Successfully extracted text via unstructured.partition.pptx")
             return t
+        else:
+            _print("[PPT] ⚠️ Fallback returned empty text")
     except Exception as e:
         _print(f"[PPT] ❌ unstructured fallback failed: {e}")
 
@@ -387,13 +399,14 @@ def _read_ppt_text(path: Path) -> str:
     try:
         with open(path, "rb") as f:
             data = f.read()
-        _print("[PPT] ❗ Final fallback: returning hex dump")
+        _print("[PPT] ❗ Final fallback: returning partial hex dump")
         return data.hex()[:5000]
     except Exception:
         pass
 
     _print(f"[PPT] ❌ Complete extraction failure for: {path.name}")
     return ""
+
 
 
 def load_text(path: Path) -> str:
