@@ -25,7 +25,7 @@ from openai import OpenAI
 load_dotenv()
 
 MODEL_NAME = "gpt-4o-mini"        # Fast + strong
-TEMPERATURE = 0.0
+TEMPERATURE = 0.2
 MAX_TOKENS = 1024                 # Smaller = faster
 
 # Limit context size per chunk
@@ -131,88 +131,60 @@ def multimedia_response(query: str, context_chunks: list[str]) -> str:
         client = OpenAI(api_key=api_key)
 
         # Trim long chunks
+        # trimmed_chunks = []
+        # for c in context_chunks:
+        #     c = c.strip()
+        #     if len(c) > CHUNK_CHAR_LIMIT:
+        #         c = c[:CHUNK_CHAR_LIMIT] + "...[truncated]"
+        #     trimmed_chunks.append(c)
+
+        # context = "\n---\n".join(trimmed_chunks)
+
+        # Trim logic removed — keep variable names the same
         trimmed_chunks = []
         for c in context_chunks:
-            c = c.strip()
-            if len(c) > CHUNK_CHAR_LIMIT:
-                c = c[:CHUNK_CHAR_LIMIT] + "...[truncated]"
-            trimmed_chunks.append(c)
+            trimmed_chunks.append(c.strip())
 
         context = "\n---\n".join(trimmed_chunks)
 
-        # ORIGINAL QUERY FOR REFERENCE
-        # You are an HR Policy Assistant.  
-            # Your job is to answer using ONLY the information found inside the provided context.
-            
-            #  You ARE allowed to make **logical inferences** when the information is implied:
-            #    - Example: If policy states "All full-time employees receive X", you may infer
-            #      the benefit applies to any full-time employee even if not stated explicitly.
-            #    - Example: If a rule describes reimbursement rules, you may apply the rule to
-            #      similar expense cases even if that specific example is not shown.
-            
-            # [IMPORTANT] You are NOT allowed to hallucinate missing details.
-            # [IMPORTANT] Never invent numbers, dates, names, amounts, or policy clauses that are not present or inferable.
-            # [IMPORTANT] If the answer cannot be found or inferred from the context, reply EXACTLY:
-            
-            # "I don't have enough information in the provided documents."
-            
-            # Do NOT reveal any confidential, sensitive, or private information.
-            # Keep answers strictly within HR & policy interpretation boundaries.
-            # nsure responses are clear, accurate, and concise.
-            
-            # -----------------------------------
-            # CONTEXT:
-            # {context}
-            # -----------------------------------
-            
-            # QUESTION:
-            # {query}
-            
-            # Now produce the **best possible answer using the context and valid inferences only**.
-            # If insufficient context is available, reply with the exact fallback sentence.
-            
+
 
         # New hallucination-safe, inference-friendly prompt
         prompt = f"""
-            You are an HR Policy Assistant. Your job is to answer the user's QUESTION using ONLY the information present in the provided CONTEXT or by making narrow, logical inferences that are directly supported by that context.
+            You are an HR Policy Assistant.  
+            Your job is to answer using ONLY the information found inside the provided context.
+            
+             You ARE allowed to make **logical inferences** when the information is implied:
+               - Example: If policy states "All full-time employees receive X", you may infer
+                 the benefit applies to any full-time employee even if not stated explicitly.
+               - Example: If a rule describes reimbursement rules, you may apply the rule to
+                 similar expense cases even if that specific example is not shown.
 
-            RESPONSE RULES (follow exactly)
-            1. INTERNAL EVIDENCE CHECK (do this mentally — do NOT output it):  
-               - First, scan the entire CONTEXT and locate any sentence(s) that directly answer the QUESTION or together imply an answer. You may combine multiple sentences only when they together make the required inference logically entailed by the text. Do NOT invent or assume facts that are not present or logically entailed.  
-               - Do NOT output any intermediate reasoning, search steps, chunk ids, filenames, or quotes from the context. Internal evidence must remain hidden.
+            Do NOT reveal any confidential, sensitive, or private information.
+            Keep answers strictly within HR & policy interpretation boundaries.
+            nsure responses are clear, accurate, and concise.
+            Important rules (follow exactly):
+            1) If any sentence in the CONTEXT explicitly answers the QUESTION, respond with the explicit answer (user-facing only) and nothing else.
+            2) If no explicit sentence exists, you may make a conservative inference only if it is directly entailed by the CONTEXT.
+            3) If neither an explicit answer nor a conservative inference is possible, reply EXACTLY:
+            "I don't have enough information in the provided documents."
             
-            2. WHEN TO ANSWER vs FALLBACK:  
-               - If the answer is explicitly present in the CONTEXT, or can be **clearly** and **conservatively** inferred from the CONTEXT, produce a concise user-facing answer (see Output Style below).  
-               - If the CONTEXT does not contain enough information to support an answer or a conservative inference, reply EXACTLY and ONLY with the following fallback sentence (no extra text, no punctuation changes):  
-                 "I don't have enough information in the provided documents."
+            Do NOT output quotes, chunk ids, filenames, or any provenance. Do NOT reveal internal reasoning. Keep the answer concise and user-focused.
             
-            3. INFERENCE GUIDELINES (allowed, but conservative):  
-               - Allowed: logical generalization (e.g., if CONTEXT says "All full-time employees receive X", you may state X applies to full-time employees).  
-               - Allowed: combining multiple explicit statements to derive a clear conclusion when all steps are entailed by the text.  
-               - Not allowed: inventing specific numbers, dates, names, monetary amounts, thresholds, or procedural steps unless they appear in the CONTEXT or are the only conservative inference. If a numeric value is not explicitly present and cannot be conservatively inferred, use the fallback.  
-               - When you perform an allowed inference, ensure it is minimal and directly supported (do not overextend).
-            
-            4. SPECIAL NUANCES:
-               - For questions asking for lists of policy types (e.g., "leave types"), by default return the most common / primary items (up to 5) unless the user explicitly asked for a complete or exhaustive list. If the CONTEXT only lists all items explicitly, you may list them; otherwise pick the most common ones implied by the CONTEXT.
-               - Do not ask clarifying questions. Provide the best possible answer permitted by the CONTEXT and these rules.
-            
-            5. OUTPUT STYLE (required):
-               - Produce ONLY the user-facing answer text. Do NOT include any citations, chunk ids, filenames, debugging info, internal notes, or evidence excerpts.  
-               - Keep answers concise and clear. Prefer 1–3 short paragraphs or a short bullet list (no more than ~7 bullets) when relevant.  
-               - If returning a simple factual value (e.g., "3 or more"), answer directly (e.g., `3 or more`). If additional clarity helps, add one short clarifying sentence, but no provenance.
-            
-            6. TONE:
-               - Professional, neutral, concise, and policy-focused.
+            [IMPORTANT] You are NOT allowed to hallucinate missing details.
+            [IMPORTANT] Never invent numbers, dates, names, amounts, or policy clauses that are not present or inferable.
+            [IMPORTANT] If the answer cannot be found or inferred from the context, reply EXACTLY:
             
             -----------------------------------
             CONTEXT:
             {context}
             -----------------------------------
+            
             QUESTION:
             {query}
             
-            Now produce the answer following the RESPONSE RULES and OUTPUT STYLE above.
-
+            Now produce the **best possible answer using the context and valid inferences only**.
+            If insufficient context is available, reply with the exact fallback sentence.
             """
 
         #  Call the fast Responses API
