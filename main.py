@@ -1020,7 +1020,7 @@ with tab3:
 # ✅ TAB 4 — Policy Chat (Memory + RAG)
 # ------------------------------------------------
 with tab4:
-    st.header("💬 Policy Chat — With Memory")
+    st.header("(ONLY FOR KREEDA TESTING -  Policy With Memory")
 
     # # ---- Ensure embeddings exist before chat can work ----
     # if st.session_state.get("rag_cache") is None:
