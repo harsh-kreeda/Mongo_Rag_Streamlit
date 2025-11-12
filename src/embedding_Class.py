@@ -338,6 +338,64 @@ def _read_excel_text(path: Path) -> str:
             continue
     return "\n\n".join(texts)
 
+def _read_ppt_text(path: Path) -> str:
+    """
+    Extract readable text from PowerPoint files (.ppt, .pptx).
+    Primary backend: python-pptx (fast + structured)
+    Fallback: unstructured partition_pptx (more robust)
+    Returns text-only content; ignores images, tables, and notes.
+    """
+    text_collected = []
+
+    # -------------------------------
+    # 1) Try python-pptx (primary)
+    # -------------------------------
+    try:
+        from pptx import Presentation
+        pres = Presentation(str(path))
+        for i, slide in enumerate(pres.slides):
+            slide_texts = []
+            for shape in slide.shapes:
+                try:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_texts.append(shape.text.strip())
+                except Exception:
+                    continue
+            if slide_texts:
+                text_collected.append(f"[[SLIDE {i+1}]]\n" + "\n".join(slide_texts))
+        if text_collected:
+            return "\n\n".join(text_collected)
+    except Exception as e:
+        _print(f"[PPT] ❌ python-pptx failed: {e}")
+
+    # -------------------------------
+    # 2) Try unstructured as fallback
+    # -------------------------------
+    try:
+        from unstructured.partition.pptx import partition_pptx
+        elements = partition_pptx(filename=str(path))
+        t = "\n".join(el.text for el in elements if getattr(el, "text", None))
+        if t.strip():
+            _print("[PPT] ✅ Extracted via unstructured.partition.pptx")
+            return t
+    except Exception as e:
+        _print(f"[PPT] ❌ unstructured fallback failed: {e}")
+
+    # -------------------------------
+    # 3) Final fallback — binary read
+    # -------------------------------
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        _print("[PPT] ❗ Final fallback: returning hex dump")
+        return data.hex()[:5000]
+    except Exception:
+        pass
+
+    _print(f"[PPT] ❌ Complete extraction failure for: {path.name}")
+    return ""
+
+
 def load_text(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in [".txt", ".md"]:
@@ -350,6 +408,8 @@ def load_text(path: Path) -> str:
         return _read_csv_text(path)
     if suffix in [".xls", ".xlsx"]:
         return _read_excel_text(path)
+    if suffix in [".ppt", ".pptx"]:
+        return _read_ppt_text(path) 
     # unknown: try text
     try:
         return _read_txt(path)
