@@ -492,9 +492,9 @@ with tab1:
         st.session_state.rag_cache = None
         st.info("Cache cleared, embeddings will rebuild on next Run.")
 
-    # POLICIES_PATH = os.path.join(ROOT_DIR, "Dataset", "Policies")
+    POLICIES_PATH = os.path.join(ROOT_DIR, "Dataset", "Policies")
     # CHange to above one for all file access - Or Update the below filename for specific file access
-    POLICIES_FILE = os.path.join(ROOT_DIR, "Dataset", "Policies", "Policies.pdf")
+    # POLICIES_FILE = os.path.join(ROOT_DIR, "Dataset", "Policies", "Policies.pdf")
 
 
     # FUNCTION
