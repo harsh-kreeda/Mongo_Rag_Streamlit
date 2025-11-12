@@ -863,8 +863,9 @@ class RAGIndexer:
                 files.append(p)
             elif p.is_dir():
                 for f in sorted(p.rglob("*")):
-                    if f.is_file() and f.suffix.lower() in (".pdf", ".txt", ".md", ".json", ".csv", ".xls", ".xlsx"):
+                    if f.is_file() and f.suffix.lower() in (".pdf", ".txt", ".md", ".json", ".csv", ".xls", ".xlsx", ".ppt", ".pptx"):
                         files.append(f)
+
 
         # Deduplicate by absolute path
         uniq = []
