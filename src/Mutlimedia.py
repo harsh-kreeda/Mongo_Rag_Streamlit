@@ -26,7 +26,7 @@ load_dotenv()
 
 MODEL_NAME = "gpt-4o-mini"        # Fast + strong
 TEMPERATURE = 0.2
-
+MAX_TOKENS = 2048
 # Limit context size per chunk
 CHUNK_CHAR_LIMIT = 1200           # Reduce to 800 for even more speed
 
